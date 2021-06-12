@@ -1,120 +1,228 @@
 """
-Driver which simulates tag game.
+Contains tag simulator and related functions and constants.
 
-TODO: main loop is too long. More functions!
 TODO: agent time discretization needn't depend on framerate
 """
 
-import simple_agents
-import nn_agents
-from tag_spec import *
+import numpy as np
+from numpy.random import randint, rand
+from numpy.linalg import norm
+from sklearn.metrics import pairwise_distances
+import pygame
+from pygame.constants import K_q
 
 
-# animation settings
-animate = True
-COLOR_RED = (255,0,0)
-COLOR_BLUE = (0,0,255)
-COlOR_TAG_RADIUS = (150,150,150)
-COLOR_WHITE = (255,255,255)
+#### graphics settings ####
 
-# initialize state
-state = np.empty(STATE_DIM)
-state[R_POS] = [25, 25]
-state[R_VEL] = [0, 0]
-state[B_POS] = [75, 75]
-state[B_VEL] = [0, 0]
-state[IT] = -1      # Blue
-time = 0
-last_tag = -1 - grace_period
+_color_red = (255,0,0)
+_color_blue = (0,0,255)
+_color_tag_radius = (150,150,150)
+_color_background = (255,255,255)
 
-# initialize agents
 
-model = nn_agents.singleLayerModel()#load_from='singleLayer.pt')
-import torch
-loss = torch.nn.MSELoss()
-optim = torch.optim.SGD(model.parameters(), lr=1e-3)
+#### spatial and temporal game constants ####
 
-#red_agent = simple_agents.KeyboardAgent('wasd')
-red_agent = simple_agents.GreedyAgent()
-#red_agent = nn_agents.NeuralAgent('r', model, loss, optim)
-#red_agent.startChase(state)
-blue_agent = simple_agents.KeyboardAgent('arrows')
-#blue_agent = simple_agents.GreedyAgent()
-#blue_agent = nn_agents.NeuralAgent('b', model, loss, optim)
-#blue_agent.startChase(state)
+# NOTE: if there is too much drag, greedy control will be nearly unbeatable,
+# and the game won't be interesting.
 
-# initialize display
-pygame.init()
-if animate:
-    screen = pygame.display.set_mode((wrap_dist, wrap_dist))
-    clock = pygame.time.Clock()
+_wrap_dist = 500                  # game occurs on torus
+_control_force_coef = 1e3        # determines agents' acceleration capability
+_drag_coef = 5e-3                # determines drag strength, caps max speed
+_grace_period = 1                # during which there are no tagbacks
+_tag_radius = 20                  # how far 'it' player can reach
+_tick = 0.1                       # period of game clock
+_euler_step = 1e-3               # determines fidelity of euler's method
 
-# main loop
-quitting = False
-while not quitting:
-    r_control = red_agent.control(state)
-    b_control = blue_agent.control(state)
-    r_u = control_direction[r_control]
-    b_u = control_direction[b_control]
 
-    # simulate one tick of time
-    stop_time = time + 1. / framerate
-    while time < stop_time:
-        # update red
-        r_speed = norm(state[R_VEL])
-        state[R_POS] += euler_step * state[R_VEL]
-        state[R_VEL] += euler_step * (
-            control_force_coef * r_u                    # control
-            - drag_coef * r_speed * state[R_VEL]        # drag
-        )
+#### action space discretization ####
 
-        # update blue
-        b_speed = norm(state[B_VEL])
-        state[B_POS] += euler_step * state[B_VEL]
-        state[B_VEL] += euler_step * (
-            control_force_coef * b_u                    # control
-            - drag_coef * b_speed * state[B_VEL]        # drag
-        )
+_control_directions = {
+    'coast':    np.array([0,0]),
+    'n':        np.array([0,-1]),
+    'ne':       np.array([1,-1]) / np.sqrt(2),
+    'e':        np.array([1,0]),
+    'se':       np.array([1,1]) / np.sqrt(2),
+    's':        np.array([0,1]),
+    'sw':       np.array([-1,1]) / np.sqrt(2),
+    'w':        np.array([-1,0]),
+    'nw':       np.array([-1,-1]) / np.sqrt(2)
+}
 
-        # update who is it
-        r_equiv_poses = equivalentPoses(state[R_POS])
-        b_equiv_poses = equivalentPoses(state[B_POS])
-        if time > last_tag + grace_period:
-            dist = pairwise_distances(r_equiv_poses, b_equiv_poses).min()
-            if dist < tag_radius:
-                tagger, taggee = ('red', 'blue') if state[IT] == 1 else ('blue', 'red')
-                print('%s tagged %s at time %f' % (tagger, taggee, time))
-                state[IT] *= -1
-                last_tag = time
+ACTIONS = _control_directions.keys()
+N_ACTIONS = len(ACTIONS)   # 9
 
-        # world wrapping
-        state[R_POS] %= wrap_dist
-        state[B_POS] %= wrap_dist
+INTERCARDINALS = ['e','ne','n','nw','w','sw','s','se']
 
-        time += euler_step
-    # end main loop
 
-    # potentially render graphics
-    if animate:
-        surf = pygame.Surface((wrap_dist, wrap_dist))
-        surf.fill(COLOR_WHITE)
-        if state[IT] > 0:   # red is it
-            for rp, bp in zip(r_equiv_poses, b_equiv_poses):
-                pygame.draw.circle(surf, COlOR_TAG_RADIUS, rp, tag_radius)
-                pygame.draw.circle(surf, COLOR_BLUE, bp, tag_radius / 2)
-                pygame.draw.circle(surf, COLOR_RED, rp, tag_radius / 2)
-        else:
-            for rp, bp in zip(r_equiv_poses, b_equiv_poses):
-                pygame.draw.circle(surf, COlOR_TAG_RADIUS, bp, tag_radius)
-                pygame.draw.circle(surf, COLOR_RED, rp, tag_radius / 2)
-                pygame.draw.circle(surf, COLOR_BLUE, bp, tag_radius / 2)
-        screen.blit(surf, (0,0))
-        clock.tick(framerate)
-        pygame.display.update()
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                quitting = True
+#### indexing into state vector ####
 
-nn_agents.dumpModel(model, 'singleLayer.pt')
+# where to find each agent's position and velocity, 
+# and who is it (1 -- red, -1 -- blue), in state vector
+R_POS = slice(0, 2)
+B_POS = slice(2, 4)
+R_VEL = slice(4, 6)
+B_VEL = slice(6, 8)
+IT = 8
+
+STATE_DIM = 9
+
+
+def switchColors(state) -> np.ndarray:
+    """Return a copy of the state with red and blue switched."""
+    result = state.copy()
+    result[R_POS] = state[B_POS]
+    result[R_VEL] = state[B_VEL]
+    result[B_POS] = state[R_POS]
+    result[B_VEL] = state[R_VEL]
+    result[IT] = -state[IT]
+    return result
+
+
+# public for greedy agent's use
+def equivalentPoses(pose) -> np.ndarray:
+    """Get nine equivalent poses due to world wrapping."""
+    result = []
+    steps = np.array([-1, 0, 1])
+    for up in steps:
+        for right in steps:
+            step = np.array([up, right])
+            result.append(pose + _wrap_dist * step)
+    return np.array(result)
+
+
+#### game engine ####
+
+class Game:
+    """
+    Maintain and evolve state of tag game according to agents' actions.
+    Initial positions and who is it are chosen randomly.
+
+    If animation_title is a string, animate the game in a pygame window with the given
+    title.
+    """
+
+    def __init__(self, animation_title=None) -> None:
+        print('[GAME] starting new game')
+        self._state = np.zeros(STATE_DIM)
+        self._state[R_POS] = randint(_wrap_dist, size=2)
+        self._state[B_POS] = randint(_wrap_dist, size=2)
+        self._state[IT] = 2 * (rand() > 0.5) - 1
+        self._time = 0
+        self._last_tag = -1 - _grace_period
+
+        self._animate = False
+        if animation_title is not None:
+            pygame.init()
+            self._screen = pygame.display.set_mode((_wrap_dist, _wrap_dist))
+            pygame.display.set_caption(animation_title)
+            self._animate = True
+            self._clock = pygame.time.Clock()
+
     
+    def getState(self) -> np.ndarray:
+        """Return the current game state."""
+        return self._state
+
+    def timestep(self, r_control, b_control) -> bool:
+        """
+        Progress the game by one tick of time. Print a message if a player is tagged.
+        Update the pygame window if this game is animated.
+
+        Return boolean indicating whether or not to halt the program.
+        """
+        # control force directions for both agents
+        r_u = _control_directions[r_control]
+        b_u = _control_directions[b_control]
+
+        # numerically simulate one tick
+        stop_time = self._time + _tick
+        while self._time < stop_time:
+
+            # update red
+            r_speed = norm(self._state[R_VEL])
+            self._state[R_POS] += _euler_step * self._state[R_VEL]
+            self._state[R_VEL] += _euler_step * (
+                _control_force_coef * r_u                    # control
+                - _drag_coef * r_speed * self._state[R_VEL]  # drag
+            )
+
+            # update blue
+            b_speed = norm(self._state[B_VEL])
+            self._state[B_POS] += _euler_step * self._state[B_VEL]
+            self._state[B_VEL] += _euler_step * (
+                _control_force_coef * b_u                    # control
+                - _drag_coef * b_speed * self._state[B_VEL]  # drag
+            )
+
+            # update who is it
+            r_equiv_poses = equivalentPoses(self._state[R_POS])
+            b_equiv_poses = equivalentPoses(self._state[B_POS])
+            if self._time > self._last_tag + _grace_period:
+                dist = pairwise_distances(r_equiv_poses, b_equiv_poses).min()
+                if dist < _tag_radius:
+                    tagger, taggee = ('red', 'blue') if self._state[IT] == 1 else ('blue', 'red')
+                    print('[GAME] %s tagged %s at time %f' % (tagger, taggee, self._time))
+                    self._state[IT] *= -1
+                    self._last_tag = self._time
+
+            # world wrapping
+            self._state[R_POS] %= _wrap_dist
+            self._state[B_POS] %= _wrap_dist
+
+            self._time += _euler_step
+        
+        # potentially animate new frame
+        if self._animate:
+            surf = pygame.Surface((_wrap_dist, _wrap_dist))
+            surf.fill(_color_background)
+            if self._state[IT] > 0:   # red is it
+                for rp, bp in zip(r_equiv_poses, b_equiv_poses):
+                    pygame.draw.circle(surf, _color_tag_radius, rp, _tag_radius)
+                    pygame.draw.circle(surf, _color_blue, bp, _tag_radius / 2)
+                    pygame.draw.circle(surf, _color_red, rp, _tag_radius / 2)
+            else:
+                for rp, bp in zip(r_equiv_poses, b_equiv_poses):
+                    pygame.draw.circle(surf, _color_tag_radius, bp, _tag_radius)
+                    pygame.draw.circle(surf, _color_red, rp, _tag_radius / 2)
+                    pygame.draw.circle(surf, _color_blue, bp, _tag_radius / 2)
+            self._screen.blit(surf, (0,0))
+            self._clock.tick(1 / _tick)
+            pygame.display.update()
+            # quit when window is closed
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    return False
+        
+        return True
+    
+    def __del__(self) -> None:
+        print('[GAME] terminating game')
+
+
+#### smooth representation of states for neural networks ####
+
+def _trigCoord(x):
+    x *= 2 * np.pi / _wrap_dist
+    return np.cos(x), np.sin(x)
+def _trigPose(pose):
+    c0, s0 = _trigCoord(pose[0])
+    c1, s1 = _trigCoord(pose[1])
+    return np.array([c0, s0, c1, s1])
+
+# Use these for indexing into trig represented states
+# R_VEL, B_VEL, and IT work for smooth and non-smooth representations
+SMOOTH_STATE_DIM = STATE_DIM + 4
+SMOOTH_R_POS = slice(0, 4)
+SMOOTH_B_POS = slice(STATE_DIM, SMOOTH_STATE_DIM)
+
+def trigStateEncoding(state) -> np.ndarray:
+    """
+    Replace discontinuous rectangular 2D coordinates with smooth 4D 
+    trigonometric coordinates.
+    """
+    result = np.empty(SMOOTH_STATE_DIM)
+    result[:STATE_DIM] = state
+    result[SMOOTH_R_POS] = _trigPose(state[R_POS])
+    result[SMOOTH_B_POS] = _trigPose(state[B_POS])
+    return result
