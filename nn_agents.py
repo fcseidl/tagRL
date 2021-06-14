@@ -1,9 +1,7 @@
 """
-Use a neural network to predict the time until next tag given 
-every possible next action; this informs actions.
+This module contains code for training neural networks to play tag.
 
-TODO: time discounting
-TODO: learn from another agent for bootstrapping
+TODO: use CUDA?
 """
 
 from torch import nn, optim
@@ -12,106 +10,210 @@ import torch
 from tag import *
 
 
-# TODO: engage cuda?
-#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def singleLayerTagNet(hidden_dim=100) -> nn.Module:
+    """Create a randomly weighted network with one hidden layer."""
+    print('[NETWORK] randomly initialized single-layer network with %d hidden neurons.' % hidden_dim)
+    return nn.Sequential(
+        nn.Linear(SMOOTH_STATE_DIM, hidden_dim),
+        nn.ReLU(),
+        nn.Linear(hidden_dim, N_ACTIONS),
+        nn.Tanh()
+    )
 
-# TODO: the class that trains the network should be different from the one that 
-# uses it for policy!
+
+def unpickleTagNet(location) -> nn.Module:
+    """Load a prestored network from a file."""
+    print('[NETWORK] reloaded network from %s.' % location)
+    return torch.load(location)
+
+def pickleTagNet(net, location) -> None:
+    """Dump a trained network to a .pt file."""
+    print('[NETWORK] dumped network to %s.' % location)
+    torch.save(net, location)
+
+
+class TagNetTrainer:
+    """This class updates a policy network by SGD as a game progresses."""
+
+    _loss_func = nn.MSELoss()
+
+    # TODO: magic numbers here
+    _lengthscale = 50
+    _time_cutoff = int(_lengthscale * np.arctanh(0.99))
+
+    def __init__(self, net, pickle_loc) -> None:
+        self._net = net
+        self._optimizer = optim.SGD(self._net.parameters(), lr=5e-2)
+        self._steps_recorded = 0
+        self._steps = 0
+        self._state_history = []
+        self._actions_taken = {'r': [], 'b': []}
+        self._pickle_loc = pickle_loc
+
+    def reset(self) -> None:
+        """Call when who is it changes."""
+        # update weights by SGD
+        print('[TRAINING] update based on %d timesteps.' % self._steps)
+        for t in range(self._steps_recorded):
+            self._updateBothPlayers(
+                state=self._state_history[t],
+                r_action=self._actions_taken['r'][t],
+                b_action=self._actions_taken['b'][t],
+                chase_duration=self._steps_recorded - t
+            )
+        # discard remembered game history
+        self._steps_recorded = 0
+        self._steps = 0
+        self._state_history = []
+        self._actions_taken = {'r': [], 'b': []}
+
+    def recordTimestep(self, state, r_action, b_action) -> None:
+        """
+        Inform the trainer of the state and actions at each timestep. If no one has 
+        been tagged for sufficiently long, update the network based on the 
+        earliest recorded state and then discard this state.
+        """
+        # update records
+        self._state_history.append(state)
+        self._actions_taken['r'].append(r_action)
+        self._actions_taken['b'].append(b_action)
+
+        # has it been long enough to say that the it player failed?
+        if self._steps == self._time_cutoff:
+            print('[TRAINING] chase duration exceeds threshold of %d timesteps.' % self._time_cutoff)
+        self._steps += 1
+        if self._steps > self._time_cutoff:
+            self._updateBothPlayers(
+                state=self._state_history[0],
+                r_action=self._actions_taken['r'][0],
+                b_action=self._actions_taken['b'][0],
+                chase_duration=self._steps_recorded
+            )
+            self._state_history.pop(0)
+            self._actions_taken['r'].pop(0)
+            self._actions_taken['b'].pop(0)
+        else:
+            self._steps_recorded += 1
+    
+    def _updateBothPlayers(self, state, r_action, b_action, chase_duration) -> None:
+        # internally, we always represent the player whose action is being considered as red
+        self._updateRed(state, r_action, chase_duration)
+        switched = switchColors(state)
+        self._updateRed(state, b_action, chase_duration)
+
+    def _updateRed(self, state, r_action, chase_duration) -> None:
+        # single stochastic update
+        self._optimizer.zero_grad()
+        action_idx = ACTIONS.index(r_action)
+        smooth_state = smoothStateEncoding(state)
+        pred_reward = self._net(smooth_state)[action_idx]
+        true_reward = np.tanh(chase_duration / self._lengthscale) * -state[IT]
+        true_reward = torch.tensor(true_reward).float()
+        loss = self._loss_func(pred_reward, true_reward)
+        loss.backward()
+        self._optimizer.step()
+    
+    def __del__(self) -> None:
+        print('[TRAINING] pickling trained network.')
+        pickleTagNet(self._net, self._pickle_loc)
 
 
 class NeuralAgent:
-    """
-    Base class for an agent which chooses actions using a neural network to predict
-    the marginal reward associated with each action. TODO: subclasses for different 
-    network structures. Currently, the network will have a single hidden layer.
+    """This class plays tag using a policy network."""
 
-    Params
-    ------
-    color : str
-        'r' or 'b'
-    hidden_dim : int, optional
-        Dimension of single hidden layer. Default is 100.
-    load_from : str, optional
-        Name of file from which to load pretrained model. Model is initialized randomly
-        if load_from is not specified.
-    """
-
-    def __init__(self, color, hidden_dim=100, load_from=None) -> None:
+    def __init__(self, color, network) -> None:
         self._color = color
-        if load_from is not None:
-            self._model = torch.load(load_from)
-        else:
-            self._model = nn.Sequential(
-                nn.Linear(SMOOTH_STATE_DIM, hidden_dim),
-                nn.ReLU(),
-                nn.Linear(hidden_dim, N_ACTIONS)
-            )
-        self._loss_func = nn.MSELoss()
-        self._optimizer = optim.SGD(self._model.parameters(), lr=1e-2)
-
-    def dumpModel(self, dump_to) -> None:
-        """Save the agent's trained network to a .pt file."""
-        print('Saving learned model to %s' % dump_to)
-        torch.save(self._model, dump_to)
-
-    def startGame(self, init_state, _switch_if_blue=True) -> None:
-        """Call this function when the agent starts a game."""
-        # internally always represent ourself as red
-        if _switch_if_blue and self._color[0] == 'b':
-            init_state = switchColors(init_state)
-        self._chase_duration = 0
-        self._it = init_state[IT]
-        self._smooth_state_history = []
-        self._actions_taken = []
+        self._net = network
     
-    def control(self, state) -> str:
+    def action(self, state) -> str:
         """
         Given a game state, predict the marginal rewards associated with each action, and
         return the most attractive action. Predictions are stored for future backprop. If 
         state[IT] has changed since the last decision point, update the network by backprop.
-
+        
         This function should be called every timestep in the game.
         """
         # internally always represent ourself as red
         if self._color[0] == 'b':
             state = switchColors(state)
-
-        # update weights if someone has been tagged
-        try:
-            if self._it != state[IT]:
-                # 'it' player has changed, backprop step and lose remembered history
-                self._updateWeights()
-                self.startGame(state, _switch_if_blue=False)
-            self._it = state[IT]
-        except AttributeError:
-            raise Exception('NeuralAgent control() function called before startGame()')
-
+        
         # use model to choose next action
-        smooth_state = trigStateEncoding(state)
-        smooth_state = torch.tensor(smooth_state).float()
-        predict_rewards = self._model(smooth_state)
+        smooth_state = smoothStateEncoding(state)
+        predict_rewards = self._net(smooth_state)
         idx = predict_rewards.argmax()
-        action = list(_control_directions.keys())[idx]
+        return ACTIONS[idx]
 
-        # remember state and action idx for backprop
-        self._smooth_state_history.append(smooth_state)
-        self._actions_taken.append(idx)
-        self._chase_duration += 1
 
-        return action
+def trainBySelfPlay(network, pickle_loc, animate=False) -> None:
+    """Train a policy network by repeated self play."""
+    # initialization
+    game = Game(animation_title='self-play' if animate else None)
+    red_agent = NeuralAgent('red', network)
+    #blue_agent = NeuralAgent('blue', network)
+    import simple_agents
+    blue_agent = simple_agents.KeyboardAgent('arrows')
+    trainer = TagNetTrainer(network, pickle_loc)
 
-    def _updateWeights(self) -> None:
-        # Use prev state and chase duration to determine true reward.
-        # Update weights using SGD.
-        print('[AGENT] %s updates based on %d timesteps' % (self._color, self._chase_duration))
-        for t in range(self._chase_duration):
-            self._optimizer.zero_grad()
-            a_t = self._actions_taken[t]
-            s_t = self._smooth_state_history[t]
-            pred = self._model(s_t)[a_t]
-            truth = (t - self._chase_duration) * self._it
-            truth = torch.tensor(truth).float()
-            loss = self._loss_func(pred, truth)
-            loss.backward()
-            self._optimizer.step()
+    # play game
+    continuing = True
+    prev_it = game.getState()[IT]
+    while continuing:
+        state = game.getState()
+
+        # did someone get tagged?
+        if state[IT] != prev_it:
+            trainer.reset()
+        prev_it = state[IT]
+
+        # get actions and do a timestep
+        r_action = red_agent.action(state)
+        b_action = blue_agent.action(state)
+        continuing = game.timestep(r_action, b_action)
+        
+        # update trainer
+        trainer.recordTimestep(state, r_action, b_action)
+
+
+def trainVsSimple(network, pickle_loc, animate=False) -> None:
+    import simple_agents
+    simple = simple_agents.CompositeAgent(
+        [simple_agents.RandomAgent(), simple_agents.MagneticAgent()],
+        [1, 10]
+    )
+
+    # initialization
+    game = Game(animation_title='net vs greedy' if animate else None)
+    red_agent = NeuralAgent('red', network)
+    blue_agent = simple
+    trainer = TagNetTrainer(network, pickle_loc)
+
+    continuing = True
+    prev_it = -1
+    while continuing:
+        state = game.getState()
+
+        # did someone get tagged?
+        if state[IT] != prev_it:
+            trainer.reset()
+            if state[IT] == 1:
+                red_agent = simple
+                blue_agent = NeuralAgent('blue', network)
+            else:
+                red_agent = NeuralAgent('red', network)
+                blue_agent = simple
+        prev_it = state[IT]
+
+        # get actions and do a timestep
+        r_action = red_agent.action(state)
+        b_action = blue_agent.action(state)
+        continuing = game.timestep(r_action, b_action)
+        
+        # update trainer
+        trainer.recordTimestep(state, r_action, b_action)
+
+
+if __name__ == '__main__':
+    net = singleLayerTagNet()
+    trainVsSimple(net, pickle_loc='singleLayer.pt', animate=False)
+    #trainBySelfPlay(net, pickle_loc='singleLayer.pt', animate=True)
 

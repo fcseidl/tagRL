@@ -10,6 +10,7 @@ from numpy.linalg import norm
 from sklearn.metrics import pairwise_distances
 import pygame
 from pygame.constants import K_q
+from torch import tensor
 
 
 #### graphics settings ####
@@ -31,12 +32,12 @@ _drag_coef = 5e-3                # determines drag strength, caps max speed
 _grace_period = 1                # during which there are no tagbacks
 _tag_radius = 20                  # how far 'it' player can reach
 _tick = 0.1                       # period of game clock
-_euler_step = 1e-3               # determines fidelity of euler's method
+_euler_step = 2e-2               # determines fidelity of euler's method
 
 
 #### action space discretization ####
 
-_control_directions = {
+_action_directions = {
     'coast':    np.array([0,0]),
     'n':        np.array([0,-1]),
     'ne':       np.array([1,-1]) / np.sqrt(2),
@@ -48,7 +49,7 @@ _control_directions = {
     'nw':       np.array([-1,-1]) / np.sqrt(2)
 }
 
-ACTIONS = _control_directions.keys()
+ACTIONS = list(_action_directions.keys())
 N_ACTIONS = len(ACTIONS)   # 9
 
 INTERCARDINALS = ['e','ne','n','nw','w','sw','s','se']
@@ -123,16 +124,16 @@ class Game:
         """Return the current game state."""
         return self._state
 
-    def timestep(self, r_control, b_control) -> bool:
+    def timestep(self, r_action, b_action) -> bool:
         """
         Progress the game by one tick of time. Print a message if a player is tagged.
         Update the pygame window if this game is animated.
 
         Return boolean indicating whether or not to halt the program.
         """
-        # control force directions for both agents
-        r_u = _control_directions[r_control]
-        b_u = _control_directions[b_control]
+        # action force directions for both agents
+        r_u = _action_directions[r_action]
+        b_u = _action_directions[b_action]
 
         # numerically simulate one tick
         stop_time = self._time + _tick
@@ -216,13 +217,16 @@ SMOOTH_STATE_DIM = STATE_DIM + 4
 SMOOTH_R_POS = slice(0, 4)
 SMOOTH_B_POS = slice(STATE_DIM, SMOOTH_STATE_DIM)
 
-def trigStateEncoding(state) -> np.ndarray:
+def smoothStateEncoding(state):
     """
     Replace discontinuous rectangular 2D coordinates with smooth 4D 
-    trigonometric coordinates.
+    trigonometric coordinates. The state space is a torus is parameterized 
+    by two angles, so the smooth 4D coordinates consist of two sine, cosine
+    pairs.
     """
     result = np.empty(SMOOTH_STATE_DIM)
     result[:STATE_DIM] = state
     result[SMOOTH_R_POS] = _trigPose(state[R_POS])
     result[SMOOTH_B_POS] = _trigPose(state[B_POS])
-    return result
+    return tensor(result).float()
+

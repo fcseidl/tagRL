@@ -32,7 +32,7 @@ class KeyboardAgent:
             self._key_s = K_DOWN
             self._key_w = K_LEFT
     
-    def control(self, state):
+    def action(self, state):
         try:
             n = e = 0
             keys = pygame.key.get_pressed()
@@ -53,13 +53,13 @@ class KeyboardAgent:
             exit()
 
 
-class GreedyAgent:
+class MagneticAgent:
     """
     Always move parallel to shortest line segment connecting 
     agent and opponent. Direction depends on who is it.
     """
 
-    def control(self, state):
+    def action(self, state):
         r_equiv_poses = equivalentPoses(state[R_POS])
         b_equiv_poses = equivalentPoses(state[B_POS])
         D = pairwise_distances(r_equiv_poses, b_equiv_poses)
@@ -71,3 +71,21 @@ class GreedyAgent:
         theta = np.arctan2(-direction[1], direction[0]) % (2 * np.pi)
         return roundToIntercardinal(theta)
 
+
+class RandomAgent:
+    """Take actions at uniform random."""
+
+    def action(self, state) -> str:
+        return np.random.choice(ACTIONS)
+
+
+class CompositeAgent:
+    """Give control to a random member of a set of agents each round."""
+
+    def __init__(self, agents, weights) -> None:
+        self._agents = agents
+        self._p = np.array(weights) / sum(weights)
+
+    def action(self, state) -> str:
+        agent = np.random.choice(self._agents, p=self._p)
+        return agent.action(state)
