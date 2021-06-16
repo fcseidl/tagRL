@@ -14,14 +14,14 @@ game = tag.Game(animation_title='tag')
 # initialize agents
 
 #red_agent = simple_agents.KeyboardAgent('wasd')
-red_agent = simple_agents.CompositeAgent(
+blue_agent = simple_agents.CompositeAgent(
     [simple_agents.RandomAgent(), simple_agents.MagneticAgent()],
     [1, 10]
 )
-'''net = nn_agents.unpickleTagNet('singleLayer.pt')
-red_agent = nn_agents.NeuralAgent('red', net)'''
+#net = nn_agents.unpickleTagNet('singleLayer.pt')
+#blue_agent = nn_agents.NeuralAgent('blue', net)
 
-blue_agent = simple_agents.KeyboardAgent('arrows')
+red_agent = simple_agents.KeyboardAgent('arrows')
 
 # main loop
 continuing = True

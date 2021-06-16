@@ -1,7 +1,5 @@
 """
 Contains tag simulator and related functions and constants.
-
-TODO: agent time discretization needn't depend on framerate
 """
 
 import numpy as np
@@ -31,9 +29,10 @@ _control_force_coef = 1e3        # determines agents' acceleration capability
 _drag_coef = 5e-3                # determines drag strength, caps max speed
 _grace_period = 1                # during which there are no tagbacks
 _tag_radius = 20                  # how far 'it' player can reach
-_tick = 0.1                       # period of game clock
 _euler_step = 2e-2               # determines fidelity of euler's method
+# TODO: enforce that _euler_step divides TICK
 
+TICK = 0.1                       # period of game clock. Public for RL agents.
 
 #### action space discretization ####
 
@@ -124,6 +123,10 @@ class Game:
         """Return the current game state."""
         return self._state
 
+    def getTime(self) -> float:
+        """Return the current game time."""
+        return self._time
+
     def timestep(self, r_action, b_action) -> bool:
         """
         Progress the game by one tick of time. Print a message if a player is tagged.
@@ -136,8 +139,9 @@ class Game:
         b_u = _action_directions[b_action]
 
         # numerically simulate one tick
-        stop_time = self._time + _tick
-        while self._time < stop_time:
+        stop_time = self._time + TICK
+        while stop_time - self._time > _euler_step / 2:     # this stop condition avoids tick lengthening due to imprecision
+            self._time = _euler_step * round(self._time / _euler_step + 1)
 
             # update red
             r_speed = norm(self._state[R_VEL])
@@ -169,10 +173,9 @@ class Game:
             # world wrapping
             self._state[R_POS] %= _wrap_dist
             self._state[B_POS] %= _wrap_dist
-
-            self._time += _euler_step
         
         # potentially animate new frame
+        # TODO: frame rate needn't be the same as agent time discretization
         if self._animate:
             surf = pygame.Surface((_wrap_dist, _wrap_dist))
             surf.fill(_color_background)
@@ -187,18 +190,18 @@ class Game:
                     pygame.draw.circle(surf, _color_red, rp, _tag_radius / 2)
                     pygame.draw.circle(surf, _color_blue, bp, _tag_radius / 2)
             self._screen.blit(surf, (0,0))
-            self._clock.tick(1 / _tick)
+            self._clock.tick(1 / TICK)
             pygame.display.update()
             # quit when window is closed
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
-                    pygame.quit()
                     return False
         
         return True
     
     def __del__(self) -> None:
-        print('[GAME] terminating game')
+        print('[GAME] terminating game; %s is it' % ('red' if self._state[IT] == 1 else 'blue'))
+        pygame.quit()
 
 
 #### smooth representation of states for neural networks ####
@@ -222,11 +225,13 @@ def smoothStateEncoding(state):
     Replace discontinuous rectangular 2D coordinates with smooth 4D 
     trigonometric coordinates. The state space is a torus is parameterized 
     by two angles, so the smooth 4D coordinates consist of two sine, cosine
-    pairs.
+    pairs. Also, normalize velocities.
     """
     result = np.empty(SMOOTH_STATE_DIM)
-    result[:STATE_DIM] = state
     result[SMOOTH_R_POS] = _trigPose(state[R_POS])
     result[SMOOTH_B_POS] = _trigPose(state[B_POS])
+    result[R_VEL] = state[R_VEL] / _wrap_dist
+    result[B_VEL] = state[B_VEL] / _wrap_dist
+    result[IT] = state[IT]
     return tensor(result).float()
 
