@@ -41,7 +41,7 @@ class TagNetTrainer:
     _lengthscale = 50
     _time_cutoff = int(_lengthscale * np.arctanh(0.99))
 
-    def __init__(self, net, pickle_loc) -> None:
+    def __init__(self, net, pickle_loc, variance_weight=0.05) -> None:
         self._net = net
         self._optimizer = optim.SGD(self._net.parameters(), lr=5e-2)
         self._steps_recorded = 0
@@ -49,6 +49,7 @@ class TagNetTrainer:
         self._state_history = []
         self._actions_taken = {'r': [], 'b': []}
         self._pickle_loc = pickle_loc
+        self._variance_weight = variance_weight
 
     def reset(self) -> None:
         """Call when who is it changes."""
@@ -106,10 +107,12 @@ class TagNetTrainer:
         self._optimizer.zero_grad()
         action_idx = ACTIONS.index(r_action)
         smooth_state = smoothStateEncoding(state)
-        pred_reward = self._net(smooth_state)[action_idx]
+        pred_rewards = self._net(smooth_state)
+        variance = torch.var(pred_rewards)
+        pred_reward = pred_rewards[action_idx]
         true_reward = np.tanh(chase_duration / self._lengthscale) * -state[IT]
         true_reward = torch.tensor(true_reward).float()
-        loss = self._loss_func(pred_reward, true_reward)
+        loss = self._loss_func(pred_reward, true_reward) - self._variance_weight * variance
         loss.backward()
         self._optimizer.step()
     
@@ -182,26 +185,30 @@ def trainVsSimple(network, pickle_loc, animate=False) -> None:
     )
 
     # initialization
-    game = Game(animation_title='net vs greedy' if animate else None)
+    game_num = 1
+    game = Game(animation_title='net vs simple 1' if animate else None)
+    prev_it = game.getState()[IT]
     red_agent = NeuralAgent('red', network)
     blue_agent = simple
-    trainer = TagNetTrainer(network, pickle_loc)
+    trainer = TagNetTrainer(network, pickle_loc, variance_weight=0)
 
     continuing = True
-    prev_it = -1
     while continuing:
         state = game.getState()
 
-        # did someone get tagged?
+        # did someone get tagged? if so reset game
         if state[IT] != prev_it:
             trainer.reset()
-            if state[IT] == 1:
+            del game
+            game_num += 1
+            game = Game(animation_title='net vs simple %d' % game_num if animate else None)
+            prev_it = game.getState()[IT]
+            if prev_it == 1:
                 red_agent = simple
                 blue_agent = NeuralAgent('blue', network)
             else:
                 red_agent = NeuralAgent('red', network)
                 blue_agent = simple
-        prev_it = state[IT]
 
         # get actions and do a timestep
         r_action = red_agent.action(state)
@@ -214,6 +221,6 @@ def trainVsSimple(network, pickle_loc, animate=False) -> None:
 
 if __name__ == '__main__':
     net = singleLayerTagNet()
-    trainVsSimple(net, pickle_loc='singleLayer.pt', animate=False)
+    trainVsSimple(net, pickle_loc='singleLayer.pt', animate=True)
     #trainBySelfPlay(net, pickle_loc='singleLayer.pt', animate=True)
 
