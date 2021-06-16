@@ -192,13 +192,13 @@ class Game:
             # quit when window is closed
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
-                    pygame.quit()
                     return False
         
         return True
     
     def __del__(self) -> None:
         print('[GAME] terminating game')
+        pygame.quit()
 
 
 #### smooth representation of states for neural networks ####
@@ -222,11 +222,13 @@ def smoothStateEncoding(state):
     Replace discontinuous rectangular 2D coordinates with smooth 4D 
     trigonometric coordinates. The state space is a torus is parameterized 
     by two angles, so the smooth 4D coordinates consist of two sine, cosine
-    pairs.
+    pairs. Also, normalize velocities.
     """
     result = np.empty(SMOOTH_STATE_DIM)
     result[:STATE_DIM] = state
     result[SMOOTH_R_POS] = _trigPose(state[R_POS])
     result[SMOOTH_B_POS] = _trigPose(state[B_POS])
+    result[R_VEL] = state[R_VEL] / _wrap_dist
+    result[B_VEL] = state[B_VEL] / _wrap_dist
     return tensor(result).float()
 

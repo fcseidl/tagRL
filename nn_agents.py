@@ -38,12 +38,12 @@ class TagNetTrainer:
     _loss_func = nn.MSELoss()
 
     # TODO: magic numbers here
-    _lengthscale = 50
+    _lengthscale = 35
     _time_cutoff = int(_lengthscale * np.arctanh(0.99))
 
     def __init__(self, net, pickle_loc) -> None:
         self._net = net
-        self._optimizer = optim.SGD(self._net.parameters(), lr=5e-2)
+        self._optimizer = optim.SGD(self._net.parameters(), lr=1e-3, weight_decay=0) # TODO: more magic numbers
         self._steps_recorded = 0
         self._steps = 0
         self._state_history = []
@@ -99,7 +99,7 @@ class TagNetTrainer:
         # internally, we always represent the player whose action is being considered as red
         self._updateRed(state, r_action, chase_duration)
         switched = switchColors(state)
-        self._updateRed(state, b_action, chase_duration)
+        self._updateRed(switched, b_action, chase_duration)
 
     def _updateRed(self, state, r_action, chase_duration) -> None:
         # single stochastic update
@@ -141,79 +141,67 @@ class NeuralAgent:
         smooth_state = smoothStateEncoding(state)
         predict_rewards = self._net(smooth_state)
         idx = predict_rewards.argmax()
+
+        #print(self._color, predict_rewards)
+
         return ACTIONS[idx]
 
 
-def trainBySelfPlay(network, pickle_loc, animate=False) -> None:
+def trainBySelfPlay(network, pickle_loc, greedy_eps=0.05, animate_every=100) -> None:
     """Train a policy network by repeated self play."""
-    # initialization
-    game = Game(animation_title='self-play' if animate else None)
-    red_agent = NeuralAgent('red', network)
-    #blue_agent = NeuralAgent('blue', network)
+
     import simple_agents
-    blue_agent = simple_agents.KeyboardAgent('arrows')
-    trainer = TagNetTrainer(network, pickle_loc)
+    print('[TRAINING] starting self-play with epsilon-greedy parameter %f' % greedy_eps)
 
-    # play game
-    continuing = True
-    prev_it = game.getState()[IT]
-    while continuing:
-        state = game.getState()
-
-        # did someone get tagged?
-        if state[IT] != prev_it:
-            trainer.reset()
-        prev_it = state[IT]
-
-        # get actions and do a timestep
-        r_action = red_agent.action(state)
-        b_action = blue_agent.action(state)
-        continuing = game.timestep(r_action, b_action)
-        
-        # update trainer
-        trainer.recordTimestep(state, r_action, b_action)
-
-
-def trainVsSimple(network, pickle_loc, animate=False) -> None:
-    import simple_agents
-    simple = simple_agents.CompositeAgent(
-        [simple_agents.RandomAgent(), simple_agents.MagneticAgent()],
-        [1, 10]
+    # initialize agents and trainer
+    red_agent = simple_agents.CompositeAgent(
+        [NeuralAgent('red', network), simple_agents.RandomAgent()], 
+        [1 - greedy_eps, greedy_eps]
     )
-
-    # initialization
-    game = Game(animation_title='net vs greedy' if animate else None)
-    red_agent = NeuralAgent('red', network)
-    blue_agent = simple
+    blue_agent = simple_agents.CompositeAgent(
+        [NeuralAgent('blue', network), simple_agents.RandomAgent()],
+        [1 - greedy_eps, greedy_eps]
+    )
     trainer = TagNetTrainer(network, pickle_loc)
 
-    continuing = True
-    prev_it = -1
-    while continuing:
-        state = game.getState()
+    # play games until interupted or user kills window
+    try:
+        game_num = 0
+        continuing = True
+        while continuing:
+            # play new game
+            game = Game(animation_title='game %d' % game_num if game_num % animate_every == 0 else None)
+            it_player = game.getState()[IT]
+            while continuing:
+                state = game.getState()
 
-        # did someone get tagged?
-        if state[IT] != prev_it:
-            trainer.reset()
-            if state[IT] == 1:
-                red_agent = simple
-                blue_agent = NeuralAgent('blue', network)
-            else:
-                red_agent = NeuralAgent('red', network)
-                blue_agent = simple
-        prev_it = state[IT]
+                # did someone get tagged?
+                if state[IT] != it_player:
+                    trainer.reset()
+                    pygame
+                    break
 
-        # get actions and do a timestep
-        r_action = red_agent.action(state)
-        b_action = blue_agent.action(state)
-        continuing = game.timestep(r_action, b_action)
+                # get actions and do a timestep
+                r_action = red_agent.action(state)
+                b_action = blue_agent.action(state)
+                continuing = game.timestep(r_action, b_action)
+                
+                # update trainer
+                trainer.recordTimestep(state, r_action, b_action)
+            
+            del game
+            game_num += 1
         
-        # update trainer
-        trainer.recordTimestep(state, r_action, b_action)
+        print('[TRAINING] stopped because user killed game window')
+    
+    except (pygame.error, KeyboardInterrupt) as stop:
+        print('[TRAINING] received stop signal of type', type(stop))
+
+    print('[TRAINING] completed %d games of self-play' % game_num)
+
 
 
 if __name__ == '__main__':
     net = singleLayerTagNet()
-    trainVsSimple(net, pickle_loc='singleLayer.pt', animate=False)
-    #trainBySelfPlay(net, pickle_loc='singleLayer.pt', animate=True)
+    trainBySelfPlay(net, pickle_loc='singleLayer.pt')
 
