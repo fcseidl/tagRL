@@ -54,10 +54,10 @@ def pickleTagNet(net, location) -> None:
 #### training constants #####
 
 _game_duration = 30                         # seconds
-_discount_rate = 0.2                       # per second
+_discount_rate = 0.7                       # per second
 _reward_cutoff = 1e-2                       # rewards smaller than this are ignored
 _learning_rate = 1e-3
-_l2_penalty = 1e-5
+_l2_penalty = 0
 
 # derived constants
 _lam = _discount_rate**TICK                 # effective discount rate (per tick)
@@ -74,13 +74,13 @@ _discount_factors /= (_discount_factors * TICK * np.ones_like(_discount_factors)
 #### SGD trainer ####
 
 class TagNetTrainer:
-    """This class updates a policy network by SGD as a game progresses."""
+    """This class updates a policy network by backprop as a game progresses."""
 
     _loss_func = nn.MSELoss()
 
     def __init__(self, net, pickle_loc) -> None:
         self._net = net
-        self._optimizer = optim.SGD(self._net.parameters(), lr=_learning_rate, weight_decay=_l2_penalty)
+        self._optimizer = optim.Adam(self._net.parameters(), lr=_learning_rate, weight_decay=_l2_penalty)
         self._pickle_loc = pickle_loc
         self._reset()
     
@@ -92,11 +92,10 @@ class TagNetTrainer:
 
     def update(self) -> dict:
         """
-        Update weights by SGD, returning average loss for predictions of 
-        both players' rewards.
+        Update weights by backprop, returning average loss for predictions of 
+        both players' rewards. Don't update based on decisions whose time 
+        horizons are beyond end of game
         """
-        # update weights by SGD
-        # don't update based on decisions whose time horizons are beyond end of game
         r_tot_loss = b_tot_loss = 0
         n_updates = max(0, self._ticks - _tick_horizon)
         for t in range(n_updates):
@@ -120,7 +119,6 @@ class TagNetTrainer:
         self._reset()
         # return avg losses
         return {'r': r_avg_loss, 'b': b_avg_loss}
-
 
     def recordTimestep(self, state, r_action, b_action, r_reward) -> None:
         """
@@ -201,29 +199,31 @@ def train(network, red_agent, blue_agent, pickle_loc, animate_every=100) -> None
         while continuing:
             # start new game
             title = None
-            if game_num % animate_every == 0:
-                if game_num > 0:
+            if game_num % animate_every == animate_every - 1:
+                if game_num > animate_every:
                     print(
-                        '[TRAINING] red was it at the end of %d out of the last %d games' \
+                        '[TRAINING] red lost of %d out of the last %d games' \
                             % (sum(red_lost[-animate_every:]), animate_every)
                     )
                 title = 'game %d' % game_num
             game = Game(animation_title=title)
             # game loop
+            r_cum_reward = 0
             state = game.getState()
             while game.getTime() < _game_duration and continuing:
+                state = game.getState()
                 r_action = red_agent.action(state)
                 b_action = blue_agent.action(state)
                 continuing = game.timestep(r_action, b_action)
-                state = game.getState()
-                r_reward = -state[IT] * TICK
+                r_reward = -game.getState()[IT] * TICK
                 trainer.recordTimestep(state, r_action, b_action, r_reward)
+                r_cum_reward += r_reward
             del game
             # update statistics
             if continuing:
                 game_num += 1
-                # was red it at the end?
-                if state[IT] == 1:
+                # was red it most of the time?
+                if r_cum_reward < 0:
                     red_lost.append(1)
                 else:
                     red_lost.append(0)
@@ -241,7 +241,6 @@ def train(network, red_agent, blue_agent, pickle_loc, animate_every=100) -> None
         '[TRAINING] correlation between red prediction error and red losing = %f' \
             % np.corrcoef(red_error, red_lost[:len(red_error)])[1,0]
     )
-
 
 
 if __name__ == '__main__':
@@ -274,10 +273,10 @@ if __name__ == '__main__':
 
         train(net, red_agent, blue_agent, pickle_loc='singleLayer.pt')
     
-    # play vs greedy
+    # play vs still
     if 1:
         greedy_eps = 0.1
-        print('[TRAINING] network (red) with eps-greedy parameter %f vs random agent (blue)' % greedy_eps)
+        print('[TRAINING] network (red) with eps-greedy parameter %f vs still agent (blue)' % greedy_eps)
 
         net = deepTagNet()
         #net = unpickleTagNet('singleLayer.pt')
@@ -285,7 +284,7 @@ if __name__ == '__main__':
             [NeuralAgent('red', net), simple_agents.RandomAgent()], 
             [1 - greedy_eps, greedy_eps]
         )
-        blue_agent = simple_agents.RandomAgent()
+        blue_agent = simple_agents.StillAgent()
 
         train(net, red_agent, blue_agent, pickle_loc='deep.pt', animate_every=250)
 

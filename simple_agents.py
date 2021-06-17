@@ -78,6 +78,12 @@ class RandomAgent:
     def action(self, state) -> str:
         return np.random.choice(ACTIONS)
 
+class StillAgent:
+    """Just sit still."""
+
+    def action(self, state) -> str:
+        return 'coast'
+
 
 class CompositeAgent:
     """Give control to a random member of a set of agents each round."""
