@@ -60,14 +60,7 @@ class MagneticAgent:
     """
 
     def action(self, state):
-        r_equiv_poses = equivalentPoses(state[R_POS])
-        b_equiv_poses = equivalentPoses(state[B_POS])
-        D = pairwise_distances(r_equiv_poses, b_equiv_poses)
-        idx = D.argmin()
-        idx = np.unravel_index(idx, (9,9))
-        rp = r_equiv_poses[idx[0]]
-        bp = b_equiv_poses[idx[1]]
-        direction = (bp - rp) * state[IT]
+        direction = state[DISP] * state[IT]
         theta = np.arctan2(-direction[1], direction[0]) % (2 * np.pi)
         return roundToIntercardinal(theta)
 

@@ -54,7 +54,7 @@ def pickleTagNet(net, location) -> None:
 #### training constants #####
 
 _game_duration = 30                         # seconds
-_discount_rate = 0.7                       # per second
+_discount_rate = 0.5                        # per second
 _reward_cutoff = 1e-2                       # rewards smaller than this are ignored
 _learning_rate = 1e-3
 _l2_penalty = 0
@@ -167,10 +167,7 @@ class NeuralAgent:
     def action(self, state) -> str:
         """
         Given a game state, predict the marginal rewards associated with each action, and
-        return the most attractive action. Predictions are stored for future backprop. If 
-        state[IT] has changed since the last decision point, update the network by backprop.
-        
-        This function should be called every timestep in the game.
+        return the most attractive action.
         """
         # internally always represent ourself as red
         if self._color[0] == 'b':
