@@ -13,8 +13,9 @@ game = tag.Game(animation_title='tag')
 
 # initialize agents
 
-red_agent = simple_agents.KeyboardAgent('wasd')
-blue_agent = simple_agents.CompositeAgent(
+#red_agent = simple_agents.KeyboardAgent('wasd')
+
+red_agent = blue_agent = simple_agents.CompositeAgent(
     [simple_agents.RandomAgent(), simple_agents.MagneticAgent()],
     [1, 10]
 )
