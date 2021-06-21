@@ -132,13 +132,14 @@ class Game:
             self._clock = pygame.time.Clock()
 
     
-    def getState(self) -> np.ndarray:
+    def observableState(self) -> np.ndarray:
         """Return the current game state."""
         # trim state to include only relative positional data
         result = np.empty(STATE_DIM)
         result[DISP] = _displacement(self._state[_r_pos], self._state[_b_pos])
         result[R_VEL] = self._state[R_VEL]
         result[B_VEL] = self._state[B_VEL]
+        result /= _wrap_dist
         result[IT] = self._state[IT]
         return result
 

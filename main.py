@@ -25,7 +25,7 @@ blue_agent = nn_agents.NeuralAgent('blue', net)
 # main loop
 continuing = True
 while continuing:
-    state = game.getState()
+    state = game.observableState()
     r_action = red_agent.action(state)
     b_action = blue_agent.action(state)
     continuing = game.timestep(r_action, b_action)

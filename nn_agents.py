@@ -2,6 +2,7 @@
 This module contains code for training neural networks to play tag.
 
 TODO: use CUDA?
+TODO: try rewarding variance in network output
 """
 
 from torch import nn, optim
@@ -54,7 +55,7 @@ def pickleTagNet(net, location) -> None:
 #### training constants #####
 
 _game_duration = 30                         # seconds
-_discount_rate = 0.1                        # per second
+_discount_rate = 0.15                        # per second
 _reward_cutoff = 1e-2                       # rewards smaller than this are ignored
 _learning_rate = 1e-3
 _l2_penalty = 0
@@ -147,7 +148,7 @@ class TagNetTrainer:
         pred_values = self._net(state)
         pred_v = pred_values[action_idx]
         true_v = torch.tensor(r_value).float()
-        loss = self._loss_func(pred_v, true_v)
+        loss = self._loss_func(pred_v, true_v) #- 1e-3 * torch.var(pred_values)      # TODO: are we rewarding variance?
         loss.backward()
         self._optimizer.step()
         return float(loss)
@@ -206,13 +207,13 @@ def train(network, red_agent, blue_agent, pickle_loc, animate_every=100) -> None
             game = Game(animation_title=title)
             # game loop
             r_cum_reward = 0
-            state = game.getState()
+            state = game.observableState()
             while game.getTime() < _game_duration and continuing:
-                state = game.getState()
+                state = game.observableState()
                 r_action = red_agent.action(state)
                 b_action = blue_agent.action(state)
                 continuing = game.timestep(r_action, b_action)
-                r_reward = -game.getState()[IT] * TICK
+                r_reward = -game.observableState()[IT] * TICK
                 trainer.recordTimestep(state, r_action, b_action, r_reward)
                 r_cum_reward += r_reward
             del game
@@ -244,7 +245,7 @@ if __name__ == '__main__':
     import simple_agents
     
     # play vs magnetic
-    if 1:
+    if 0:
         greedy_eps = 0.1
         print('[TRAINING] network (red) with eps-greedy parameter %f vs magnetic agent (blue)' % greedy_eps)
 
@@ -258,10 +259,10 @@ if __name__ == '__main__':
 
         train(net, red_agent, blue_agent, pickle_loc='deep.pt', animate_every=100)
 
-    # play vs still
-    if 0:
-        greedy_eps = 0.1
-        print('[TRAINING] network (red) with eps-greedy parameter %f vs still agent (blue)' % greedy_eps)
+    # play vs self
+    if 1:
+        greedy_eps = 0.0
+        print('[TRAINING] by self-play with epsilon-greedy parameter %f' % greedy_eps)
 
         net = deepTagNet()
         #net = unpickleTagNet('singleLayer.pt')
@@ -269,7 +270,10 @@ if __name__ == '__main__':
             [NeuralAgent('red', net), simple_agents.RandomAgent()], 
             [1 - greedy_eps, greedy_eps]
         )
-        blue_agent = simple_agents.StillAgent()
+        blue_agent = simple_agents.CompositeAgent(
+            [NeuralAgent('blue', net), simple_agents.RandomAgent()], 
+            [1 - greedy_eps, greedy_eps]
+        )
 
-        train(net, red_agent, blue_agent, pickle_loc='deep.pt', animate_every=100)
+        train(net, red_agent, blue_agent, pickle_loc='deep.pt', animate_every=75)
 
