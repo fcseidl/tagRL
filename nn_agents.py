@@ -2,6 +2,7 @@
 This module contains code for training neural networks to play tag.
 
 TODO: use CUDA?
+TODO: try rewarding variance in network output
 """
 
 from torch import nn, optim
@@ -16,7 +17,7 @@ def singleLayerTagNet(hidden_dim=100) -> nn.Module:
     """Create a randomly weighted network with one hidden layer."""
     print('[NETWORK] randomly initialized single-layer network with %d hidden neurons' % hidden_dim)
     return nn.Sequential(
-        nn.Linear(SMOOTH_STATE_DIM, hidden_dim),
+        nn.Linear(STATE_DIM, hidden_dim),
         nn.Tanh(),
         nn.Linear(hidden_dim, N_ACTIONS),
         nn.Tanh()
@@ -26,7 +27,7 @@ def deepTagNet(hidden_dim=100, hidden_layers=3) -> nn.Module:
     """Create a randomly weighted deep network."""
     print('[NETWORK] randomly initialized network with %d hidden layers of dimension %d' % (hidden_layers, hidden_dim))
     layers = [
-        nn.Linear(SMOOTH_STATE_DIM, hidden_dim),    # first hidden layer
+        nn.Linear(STATE_DIM, hidden_dim),    # first hidden layer
         nn.Tanh()
     ]
     for _ in range(hidden_layers - 1):
@@ -53,11 +54,11 @@ def pickleTagNet(net, location) -> None:
 
 #### training constants #####
 
-_game_duration = 30                         # seconds
-_discount_rate = 0.7                       # per second
+_game_duration = 40                         # seconds
+_discount_rate = 0.15                        # per second
 _reward_cutoff = 1e-2                       # rewards smaller than this are ignored
 _learning_rate = 1e-3
-_l2_penalty = 0
+_l2_penalty = 1e-4
 
 # derived constants
 _lam = _discount_rate**TICK                 # effective discount rate (per tick)
@@ -98,18 +99,20 @@ class TagNetTrainer:
         """
         r_tot_loss = b_tot_loss = 0
         n_updates = max(0, self._ticks - _tick_horizon)
-        for t in range(n_updates):
-            rewards = np.array(self._r_rewards[t:t+_tick_horizon])
-            rewards *= _discount_factors
-            value = rewards.sum()
-            rl, bl = self._updateBothPlayers(
-                state=self._state_history[t],
-                r_action=self._actions_taken['r'][t],
-                b_action=self._actions_taken['b'][t],
-                r_value=value   # lol r_value is the lvalue in this assignment
-            )
-            r_tot_loss += rl
-            b_tot_loss += bl
+        for it in range(1):   # TODO: magic num here
+            for t in range(n_updates):
+                rewards = np.array(self._r_rewards[t:t+_tick_horizon])
+                rewards *= _discount_factors
+                value = rewards.sum()
+                rl, bl = self._updateBothPlayers(
+                    state=self._state_history[t],
+                    r_action=self._actions_taken['r'][t],
+                    b_action=self._actions_taken['b'][t],
+                    r_value=value   # lol r_value is the lvalue in this assignment
+                )
+                if it == 0:
+                    r_tot_loss += rl
+                    b_tot_loss += bl
         r_avg_loss = r_tot_loss / n_updates
         b_avg_loss = b_tot_loss / n_updates
         print('[TRAINING] update based on %d timesteps' % n_updates)
@@ -143,11 +146,11 @@ class TagNetTrainer:
         # single stochastic update
         self._optimizer.zero_grad()
         action_idx = ACTIONS.index(r_action)
-        smooth_state = smoothStateEncoding(state)
-        pred_values = self._net(smooth_state)
+        state = torch.tensor(state).float()
+        pred_values = self._net(state)
         pred_v = pred_values[action_idx]
         true_v = torch.tensor(r_value).float()
-        loss = self._loss_func(pred_v, true_v)
+        loss = self._loss_func(pred_v, true_v) #- 1e-1 * pred_v          # TODO: should we encourage high predictions?
         loss.backward()
         self._optimizer.step()
         return float(loss)
@@ -160,25 +163,26 @@ class TagNetTrainer:
 class NeuralAgent:
     """This class plays tag using a policy network."""
 
-    def __init__(self, color, network) -> None:
+    def __init__(self, network, color='r') -> None:
         self._color = color
         self._net = network
+    
+    def set_color(self, color) -> None:
+        """Change what color we control."""
+        self._color = color
     
     def action(self, state) -> str:
         """
         Given a game state, predict the marginal rewards associated with each action, and
-        return the most attractive action. Predictions are stored for future backprop. If 
-        state[IT] has changed since the last decision point, update the network by backprop.
-        
-        This function should be called every timestep in the game.
+        return the most attractive action.
         """
         # internally always represent ourself as red
         if self._color[0] == 'b':
             state = switchColors(state)
         
         # use model to choose next action
-        smooth_state = smoothStateEncoding(state)
-        predict_rewards = self._net(smooth_state)
+        state = torch.tensor(state).float()
+        predict_rewards = self._net(state)
         idx = predict_rewards.argmax()
 
         #print(self._color, predict_rewards)
@@ -209,15 +213,16 @@ def train(network, red_agent, blue_agent, pickle_loc, animate_every=100) -> None
             game = Game(animation_title=title)
             # game loop
             r_cum_reward = 0
-            state = game.getState()
+            state = game.observableState()
             while game.getTime() < _game_duration and continuing:
-                state = game.getState()
                 r_action = red_agent.action(state)
                 b_action = blue_agent.action(state)
                 continuing = game.timestep(r_action, b_action)
-                r_reward = -game.getState()[IT] * TICK
+                new_state = game.observableState()
+                r_reward = -new_state[IT] * norm(new_state[DISP]) * TICK * np.sqrt(2)       # this reward func knows too much
                 trainer.recordTimestep(state, r_action, b_action, r_reward)
                 r_cum_reward += r_reward
+                state = new_state
             del game
             # update statistics
             if continuing:
@@ -246,45 +251,21 @@ def train(network, red_agent, blue_agent, pickle_loc, animate_every=100) -> None
 if __name__ == '__main__':
     import simple_agents
 
-    # self-play
-    if 0:
-        greedy_eps = 0.05
-        print('[TRAINING] starting self-play with epsilon-greedy parameter %f' % greedy_eps)
+    # play vs self
+    if 1:
+        greedy_eps = 0.07
+        print('[TRAINING] by self-play with epsilon-greedy parameter %f' % greedy_eps)
 
-        net = singleLayerTagNet()
+        net = deepTagNet()
+        #net = unpickleTagNet('deep.pt')
         red_agent = simple_agents.CompositeAgent(
-            [NeuralAgent('red', net), simple_agents.RandomAgent()], 
+            [NeuralAgent(net, color='red'), simple_agents.RandomAgent()], 
             [1 - greedy_eps, greedy_eps]
         )
         blue_agent = simple_agents.CompositeAgent(
-            [NeuralAgent('blue', net), simple_agents.RandomAgent()],
+            [NeuralAgent(net, color='blue'), simple_agents.RandomAgent()], 
             [1 - greedy_eps, greedy_eps]
         )
 
-        train(net, red_agent, blue_agent, pickle_loc='singleLayer.pt')
-    
-    # play vs greedy
-    if 0:
-        print('[TRAINING] network (red) vs magnetic agent (blue)')
-
-        net = singleLayerTagNet()
-        red_agent = NeuralAgent('red', net)
-        blue_agent = simple_agents.MagneticAgent()
-
-        train(net, red_agent, blue_agent, pickle_loc='singleLayer.pt')
-    
-    # play vs still
-    if 1:
-        greedy_eps = 0.1
-        print('[TRAINING] network (red) with eps-greedy parameter %f vs still agent (blue)' % greedy_eps)
-
-        net = deepTagNet()
-        #net = unpickleTagNet('singleLayer.pt')
-        red_agent = simple_agents.CompositeAgent(
-            [NeuralAgent('red', net), simple_agents.RandomAgent()], 
-            [1 - greedy_eps, greedy_eps]
-        )
-        blue_agent = simple_agents.StillAgent()
-
-        train(net, red_agent, blue_agent, pickle_loc='deep.pt', animate_every=250)
+        train(net, red_agent, blue_agent, pickle_loc='deep.pt', animate_every=75)
 

@@ -31,6 +31,10 @@ class KeyboardAgent:
             self._key_e = K_RIGHT
             self._key_s = K_DOWN
             self._key_w = K_LEFT
+
+    def set_color(self, color) -> None:
+        """Dummy function so that this class satisfies agent interface."""
+        pass
     
     def action(self, state):
         try:
@@ -59,15 +63,12 @@ class MagneticAgent:
     agent and opponent. Direction depends on who is it.
     """
 
+    def set_color(self, color) -> None:
+        """Dummy function so that this class satisfies agent interface."""
+        pass
+
     def action(self, state):
-        r_equiv_poses = equivalentPoses(state[R_POS])
-        b_equiv_poses = equivalentPoses(state[B_POS])
-        D = pairwise_distances(r_equiv_poses, b_equiv_poses)
-        idx = D.argmin()
-        idx = np.unravel_index(idx, (9,9))
-        rp = r_equiv_poses[idx[0]]
-        bp = b_equiv_poses[idx[1]]
-        direction = (bp - rp) * state[IT]
+        direction = state[DISP] * state[IT]
         theta = np.arctan2(-direction[1], direction[0]) % (2 * np.pi)
         return roundToIntercardinal(theta)
 
@@ -75,11 +76,19 @@ class MagneticAgent:
 class RandomAgent:
     """Take actions at uniform random."""
 
+    def set_color(self, color) -> None:
+        """Dummy function so that this class satisfies agent interface."""
+        pass
+
     def action(self, state) -> str:
         return np.random.choice(ACTIONS)
 
 class StillAgent:
     """Just sit still."""
+
+    def set_color(self, color) -> None:
+        """Dummy function so that this class satisfies agent interface."""
+        pass
 
     def action(self, state) -> str:
         return 'coast'
@@ -91,6 +100,11 @@ class CompositeAgent:
     def __init__(self, agents, weights) -> None:
         self._agents = agents
         self._p = np.array(weights) / sum(weights)
+
+    def set_color(self, color) -> None:
+        """Change the color we're playing."""
+        for ag in self._agents:
+            ag.set_color(color)
 
     def action(self, state) -> str:
         agent = np.random.choice(self._agents, p=self._p)
