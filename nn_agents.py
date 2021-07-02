@@ -5,6 +5,7 @@ TODO: use CUDA?
 TODO: try rewarding variance in network output
 """
 
+from numpy.lib.shape_base import tile
 from torch import nn, optim
 import torch
 
@@ -190,6 +191,29 @@ class NeuralAgent:
         return ACTIONS[idx]
 
 
+def trainingGame(trainer, red_agent, blue_agent, animation_title=None) -> bool:
+    """
+    Play a game between the two agents, and update a policy network with 
+    a trainer. Return whether red won the game.
+    """
+    game = Game(animation_title=animation_title)
+    continuing = True
+    r_cum_reward = 0
+    state = game.observableState()
+    while game.getTime() < _game_duration and continuing:
+        r_action = red_agent.action(state)
+        b_action = blue_agent.action(state)
+        continuing = game.timestep(r_action, b_action)
+        new_state = game.observableState()
+        r_reward = -new_state[IT] * norm(new_state[DISP]) * TICK * np.sqrt(2)       # TODO: this reward func knows too much
+        trainer.recordTimestep(state, r_action, b_action, r_reward)
+        r_cum_reward += r_reward
+        state = new_state
+    del game
+    trainer.update()
+    return r_cum_reward > 0
+
+
 def train(network, red_agent, blue_agent, pickle_loc, animate_every=100) -> None:
     """Train a policy network by playing many games."""
     trainer = TagNetTrainer(network, pickle_loc)
@@ -197,55 +221,18 @@ def train(network, red_agent, blue_agent, pickle_loc, animate_every=100) -> None
     # play games until interupted or user kills window
     try:
         game_num = 0
-        continuing = True
-        red_lost = []
-        red_error = []
-        while continuing:
-            # start new game
+        while True:
+            game_num += 1
             title = None
-            if game_num % animate_every == animate_every - 1:
-                if game_num > animate_every:
-                    print(
-                        '[TRAINING] red lost of %d out of the last %d games' \
-                            % (sum(red_lost[-animate_every:]), animate_every)
-                    )
+            if game_num % animate_every == 0:
                 title = 'game %d' % game_num
-            game = Game(animation_title=title)
-            # game loop
-            r_cum_reward = 0
-            state = game.observableState()
-            while game.getTime() < _game_duration and continuing:
-                r_action = red_agent.action(state)
-                b_action = blue_agent.action(state)
-                continuing = game.timestep(r_action, b_action)
-                new_state = game.observableState()
-                r_reward = -new_state[IT] * norm(new_state[DISP]) * TICK * np.sqrt(2)       # this reward func knows too much
-                trainer.recordTimestep(state, r_action, b_action, r_reward)
-                r_cum_reward += r_reward
-                state = new_state
-            del game
-            # update statistics
-            if continuing:
-                game_num += 1
-                # was red it most of the time?
-                if r_cum_reward < 0:
-                    red_lost.append(1)
-                else:
-                    red_lost.append(0)
-                # backprop network and record red prediction error
-                errors = trainer.update()
-                red_error.append(errors['r'])
-        
-        print('[TRAINING] stopped because user killed game window')
+            red_wins = trainingGame(trainer, red_agent, blue_agent, animation_title=title)
+            print('[TRAINING] %s won last game!' % 'red' if red_wins else 'blue')
     
     except (pygame.error, KeyboardInterrupt) as stop:
         print('[TRAINING] received stop signal of type', type(stop))
 
-    print('[TRAINING] completed %d games of self-play' % game_num)
-    print(
-        '[TRAINING] correlation between red prediction error and red losing = %f' \
-            % np.corrcoef(red_error, red_lost[:len(red_error)])[1,0]
-    )
+    print('[TRAINING] completed %d games' % game_num)
 
 
 if __name__ == '__main__':
