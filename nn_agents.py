@@ -5,7 +5,7 @@ TODO: use CUDA?
 TODO: try rewarding variance in network output
 """
 
-from numpy.lib.shape_base import tile
+
 from torch import nn, optim
 import torch
 
@@ -44,13 +44,14 @@ def deepTagNet(hidden_dim=100, hidden_layers=3) -> nn.Module:
 
 def unpickleTagNet(location) -> nn.Module:
     """Load a prestored network from a file."""
+    net = torch.load(location)
     print('[NETWORK] reloaded network from %s' % location)
-    return torch.load(location)
+    return net
 
 def pickleTagNet(net, location) -> None:
     """Dump a trained network to a .pt file."""
-    print('[NETWORK] dumped network to %s' % location)
     torch.save(net, location)
+    print('[NETWORK] dumped network to %s' % location)
 
 
 #### training constants #####
@@ -80,10 +81,9 @@ class TagNetTrainer:
 
     _loss_func = nn.MSELoss()
 
-    def __init__(self, net, pickle_loc) -> None:
+    def __init__(self, net) -> None:
         self._net = net
         self._optimizer = optim.Adam(self._net.parameters(), lr=_learning_rate, weight_decay=_l2_penalty)
-        self._pickle_loc = pickle_loc
         self._reset()
     
     def _reset(self) -> None:
@@ -155,10 +155,6 @@ class TagNetTrainer:
         loss.backward()
         self._optimizer.step()
         return float(loss)
-    
-    def __del__(self) -> None:
-        print('[TRAINING] pickling trained network')
-        pickleTagNet(self._net, self._pickle_loc)
 
 
 class NeuralAgent:
@@ -216,7 +212,7 @@ def trainingGame(trainer, red_agent, blue_agent, animation_title=None) -> bool:
 
 def train(network, red_agent, blue_agent, pickle_loc, animate_every=100) -> None:
     """Train a policy network by playing many games."""
-    trainer = TagNetTrainer(network, pickle_loc)
+    trainer = TagNetTrainer(network)
 
     # play games until interupted or user kills window
     try:
@@ -233,6 +229,8 @@ def train(network, red_agent, blue_agent, pickle_loc, animate_every=100) -> None
         print('[TRAINING] received stop signal of type', type(stop))
 
     print('[TRAINING] completed %d games' % game_num)
+
+    pickleTagNet(net, pickle_loc)
 
 
 if __name__ == '__main__':
